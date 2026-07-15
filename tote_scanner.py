@@ -37,10 +37,11 @@ def load_source_sheet() -> pd.DataFrame:
     if ws is None:
         raise ValueError(f"Source sheet (gid={SHEET_GID}) not found.")
     values = ws.get_all_values()
-    if not values:
+    if len(values) < 2:
         return pd.DataFrame()
-    df = pd.DataFrame(values[1:], columns=values[0])
-    df.columns = df.columns.str.strip()   # remove accidental leading/trailing spaces
+    # Row 1 is a title row; actual column headers are on row 2 (index 1)
+    df = pd.DataFrame(values[2:], columns=values[1])
+    df.columns = df.columns.str.strip()
     return df
 
 
