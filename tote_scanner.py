@@ -19,8 +19,12 @@ LOG_HEADERS = ["Timestamp", "Box ID", "Source FC", "Status"]
 
 
 # ─── Google client (cached across reruns) ────────────────────────────────────
+# On Streamlit Cloud: reads from st.secrets["gcp_service_account"]
+# Locally: falls back to creds.json file
 @st.cache_resource
 def get_gc():
+    if "gcp_service_account" in st.secrets:
+        return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
     return gspread.service_account(filename=SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 
 
