@@ -204,7 +204,7 @@ else:
             placeholder="Scan barcode — auto-submits on Enter...",
             label_visibility="collapsed",
         )
-        st.form_submit_button("Submit", use_container_width=True, type="primary")
+        submitted = st.form_submit_button("Submit", use_container_width=True, type="primary")
 
     # Auto-focus the input after every rerun so the scanner can go straight in
     st.components.v1.html("""
@@ -216,8 +216,8 @@ else:
     </script>
     """, height=0)
 
-    # ── Process scan ──────────────────────────────────────────────────────
-    if box_input.strip():
+    # ── Process scan — only on actual form submission, not on dialog reruns ──
+    if submitted and box_input.strip():
         try:
             df = load_source_sheet()
             result = lookup_box(box_input.strip(), dept, df)
