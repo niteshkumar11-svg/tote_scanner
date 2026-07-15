@@ -36,7 +36,10 @@ def load_source_sheet() -> pd.DataFrame:
     )
     if ws is None:
         raise ValueError(f"Source sheet (gid={SHEET_GID}) not found.")
-    return pd.DataFrame(ws.get_all_records())
+    values = ws.get_all_values()
+    if not values:
+        return pd.DataFrame()
+    return pd.DataFrame(values[1:], columns=values[0])
 
 
 def get_or_create_log_ws(spreadsheet, dept: str):
