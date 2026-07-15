@@ -39,7 +39,9 @@ def load_source_sheet() -> pd.DataFrame:
     values = ws.get_all_values()
     if not values:
         return pd.DataFrame()
-    return pd.DataFrame(values[1:], columns=values[0])
+    df = pd.DataFrame(values[1:], columns=values[0])
+    df.columns = df.columns.str.strip()   # remove accidental leading/trailing spaces
+    return df
 
 
 def get_or_create_log_ws(spreadsheet, dept: str):
@@ -57,8 +59,18 @@ def log_to_sheet(dept: str, box_id: str, source_fc: str, status: str):
     ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), box_id, source_fc, status])
 
 
+def _find_col(df: pd.DataFrame, name: str) -> str:
+    """Case-insensitive column lookup; raises with helpful message if missing."""
+    for col in df.columns:
+        if col.strip().lower() == name.strip().lower():
+            return col
+    raise KeyError(f"Column '{name}' not found. Sheet has: {list(df.columns)}")
+
+
 def lookup_box(box_id: str, dept: str, df: pd.DataFrame) -> dict:
-    match = df[df[BOX_ID_COL].astype(str).str.strip().str.upper() == box_id.upper()]
+    box_col = _find_col(df, BOX_ID_COL)
+    src_col  = _find_col(df, SOURCE_FC_COL)
+    match = df[df[box_col].astype(str).str.strip().str.upper() == box_id.upper()]
 
     if match.empty:
         return {
@@ -66,7 +78,7 @@ def lookup_box(box_id: str, dept: str, df: pd.DataFrame) -> dict:
             "message": f"Box ID <b>{box_id}</b> not found in source sheet.",
         }
 
-    source_fc = str(match.iloc[0][SOURCE_FC_COL]).strip()
+    source_fc = str(match.iloc[0][src_col]).strip()
     is_ulu = source_fc.upper().startswith("ULU")
 
     if dept == "RC":
