@@ -125,8 +125,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ─── Error popup dialog ──────────────────────────────────────────────────────
+@st.dialog("⚠️ Wrong Box Scanned!")
+def _error_popup(message: str):
+    st.markdown(f"<div style='font-size:1.1rem'>{message}</div>", unsafe_allow_html=True)
+    st.markdown("")
+    if st.button("Continue", use_container_width=True, type="primary"):
+        st.session_state.error_popup = None
+        st.rerun()
+
+
 # ─── Session state ────────────────────────────────────────────────────────────
-for key, default in [("dept", None), ("scan_log", []), ("last_result", None)]:
+for key, default in [("dept", None), ("scan_log", []), ("last_result", None), ("error_popup", None)]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -215,17 +225,27 @@ else:
             log_to_sheet(dept, result["box_id"], result["source_fc"], result["status"])
 
             st.session_state.scan_log.insert(0, result)
-            st.session_state.last_result = result
+
+            if result["status"] == "OK":
+                st.session_state.last_result = result
+                st.session_state.error_popup = None
+            else:
+                st.session_state.error_popup = result["message"]
+                st.session_state.last_result = None
+
         except FileNotFoundError:
             st.error(f"Credentials file `{SERVICE_ACCOUNT_FILE}` not found.", icon="🔑")
         except Exception as e:
             st.error(f"Error: {e}", icon="⚠️")
 
-    # ── Last result banner ────────────────────────────────────────────────
+    # ── Error popup (blocks scan until user clicks Continue) ──────────────
+    if st.session_state.error_popup:
+        _error_popup(st.session_state.error_popup)
+
+    # ── Last result banner (OK scans only) ────────────────────────────────
     if st.session_state.last_result:
         r = st.session_state.last_result
-        css = {"OK": "res-ok", "ERROR": "res-err", "NOT_FOUND": "res-warn"}[r["status"]]
-        st.markdown(f'<div class="{css}">{r["message"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="res-ok">{r["message"]}</div>', unsafe_allow_html=True)
 
     # ── Scan log ──────────────────────────────────────────────────────────
     if st.session_state.scan_log:
