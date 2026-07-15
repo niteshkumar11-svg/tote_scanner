@@ -223,11 +223,10 @@ else:
             result = lookup_box(box_input.strip(), dept, df)
             result["time"] = datetime.now().strftime("%H:%M:%S")
 
-            log_to_sheet(dept, result["box_id"], result["source_fc"], result["status"])
-
             st.session_state.scan_log.insert(0, result)
 
             if result["status"] == "OK":
+                log_to_sheet(dept, result["box_id"], result["source_fc"], result["status"])
                 st.session_state.last_result = result
                 st.session_state.error_popup = None
             else:
