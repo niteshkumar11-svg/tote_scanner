@@ -8,168 +8,239 @@ SHEET_ID = "1XZDSao2M3dPqrCbmIx_EZaps6aBPNlO9muEe9owfA2U"
 SHEET_GID = 958256319
 BOX_ID_COL = "Box ID"
 SOURCE_FC_COL = "Source FC"
-# Place your Google service account JSON file in the same folder as this script
 SERVICE_ACCOUNT_FILE = "creds.json"
-SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+LOG_HEADERS = ["Timestamp", "Box ID", "Source FC", "Status"]
 
 
-# ─── Sheet loader (cached 5 min) ─────────────────────────────────────────────
-@st.cache_data(ttl=300, show_spinner="Fetching sheet data...")
-def load_sheet() -> pd.DataFrame:
-    gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    spreadsheet = gc.open_by_key(SHEET_ID)
-    worksheets = spreadsheet.worksheets()
-    ws = next((w for w in worksheets if w.id == SHEET_GID), None)
+# ─── Google client (cached across reruns) ────────────────────────────────────
+@st.cache_resource
+def get_gc():
+    return gspread.service_account(filename=SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
+
+@st.cache_data(ttl=300, show_spinner="Loading source data...")
+def load_source_sheet() -> pd.DataFrame:
+    ws = next(
+        (w for w in get_gc().open_by_key(SHEET_ID).worksheets() if w.id == SHEET_GID),
+        None,
+    )
     if ws is None:
-        raise ValueError(f"Sheet with gid={SHEET_GID} not found.")
-    records = ws.get_all_records()
-    return pd.DataFrame(records)
+        raise ValueError(f"Source sheet (gid={SHEET_GID}) not found.")
+    return pd.DataFrame(ws.get_all_records())
+
+
+def get_or_create_log_ws(spreadsheet, dept: str):
+    try:
+        return spreadsheet.worksheet(dept)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=dept, rows=5000, cols=len(LOG_HEADERS))
+        ws.append_row(LOG_HEADERS)
+        return ws
+
+
+def log_to_sheet(dept: str, box_id: str, source_fc: str, status: str):
+    spreadsheet = get_gc().open_by_key(SHEET_ID)
+    ws = get_or_create_log_ws(spreadsheet, dept)
+    ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), box_id, source_fc, status])
 
 
 def lookup_box(box_id: str, dept: str, df: pd.DataFrame) -> dict:
-    """Returns a result dict with keys: box_id, source_fc, status, message"""
     match = df[df[BOX_ID_COL].astype(str).str.strip().str.upper() == box_id.upper()]
 
     if match.empty:
         return {
-            "box_id": box_id,
-            "source_fc": "—",
-            "status": "NOT_FOUND",
-            "message": f"Box ID **{box_id}** not found in source sheet.",
+            "box_id": box_id, "source_fc": "—", "status": "NOT_FOUND",
+            "message": f"Box ID <b>{box_id}</b> not found in source sheet.",
         }
 
     source_fc = str(match.iloc[0][SOURCE_FC_COL]).strip()
     is_ulu = source_fc.upper().startswith("ULU")
 
     if dept == "RC":
-        if is_ulu:
-            status = "OK"
-            message = f"✅ **{box_id}** — Source FC: **{source_fc}** — Valid for RC"
-        else:
-            status = "ERROR"
-            message = f"❌ **{box_id}** — Source FC: **{source_fc}** — NOT a ULU FC. This box cannot go to RC!"
-    else:  # Inbound
-        if not is_ulu:
-            status = "OK"
-            message = f"✅ **{box_id}** — Source FC: **{source_fc}** — Valid for Inbound"
-        else:
-            status = "ERROR"
-            message = f"❌ **{box_id}** — Source FC: **{source_fc}** — ULU FC detected. This box should go to RC, not Inbound!"
+        ok = is_ulu
+        err_msg = f"<b>{box_id}</b> — Source FC: <b>{source_fc}</b> — NOT a ULU FC. Cannot go to RC!"
+        ok_msg  = f"<b>{box_id}</b> — Source FC: <b>{source_fc}</b> — Valid for RC ✓"
+    else:
+        ok = not is_ulu
+        err_msg = f"<b>{box_id}</b> — Source FC: <b>{source_fc}</b> — ULU FC detected! Should go to RC, not Inbound."
+        ok_msg  = f"<b>{box_id}</b> — Source FC: <b>{source_fc}</b> — Valid for Inbound ✓"
 
-    return {"box_id": box_id, "source_fc": source_fc, "status": status, "message": message}
+    return {
+        "box_id": box_id, "source_fc": source_fc,
+        "status": "OK" if ok else "ERROR",
+        "message": ok_msg if ok else err_msg,
+    }
 
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Tote Scanner", page_icon="📦", layout="centered")
 
-st.markdown(
-    """
-    <style>
-    .result-ok    { background:#d4edda; color:#155724; padding:16px; border-radius:8px;
-                    font-size:1.15rem; font-weight:600; border-left:6px solid #28a745; }
-    .result-error { background:#f8d7da; color:#721c24; padding:16px; border-radius:8px;
-                    font-size:1.15rem; font-weight:600; border-left:6px solid #dc3545; }
-    .result-warn  { background:#fff3cd; color:#856404; padding:16px; border-radius:8px;
-                    font-size:1.15rem; font-weight:600; border-left:6px solid #ffc107; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+/* ── Department selection buttons ── */
+.dept-btn-row .stButton > button {
+    height: 160px !important;
+    font-size: 1.9rem !important;
+    font-weight: 800 !important;
+    border-radius: 14px !important;
+    letter-spacing: 0.04em;
+}
+/* ── Scan result banners ── */
+.res-ok   { background:#d4edda; color:#155724; padding:18px 20px; border-radius:10px;
+            font-size:1.2rem; font-weight:600; border-left:7px solid #28a745; margin:8px 0; }
+.res-err  { background:#f8d7da; color:#721c24; padding:18px 20px; border-radius:10px;
+            font-size:1.2rem; font-weight:600; border-left:7px solid #dc3545; margin:8px 0; }
+.res-warn { background:#fff3cd; color:#856404; padding:18px 20px; border-radius:10px;
+            font-size:1.2rem; font-weight:600; border-left:7px solid #ffc107; margin:8px 0; }
+/* ── Back button — keep it small ── */
+.back-btn .stButton > button {
+    font-size: 0.85rem !important;
+    padding: 4px 12px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
-st.title("📦 Tote Scanner")
-
-# ─── Session state init ───────────────────────────────────────────────────────
-if "scan_log" not in st.session_state:
-    st.session_state.scan_log = []
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
-if "active_dept" not in st.session_state:
-    st.session_state.active_dept = None
+# ─── Session state ────────────────────────────────────────────────────────────
+for key, default in [("dept", None), ("scan_log", []), ("last_result", None)]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
-# ─── Department selector ──────────────────────────────────────────────────────
-st.subheader("1 · Select Department")
-dept = st.radio("Department", ["RC", "Inbound"], horizontal=True, label_visibility="collapsed")
+# ════════════════════════════════════════════════════════════════════════════
+# LANDING PAGE — department selection
+# ════════════════════════════════════════════════════════════════════════════
+if st.session_state.dept is None:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center'>📦 Tote Scanner</h1>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align:center; color:gray; margin-bottom:40px'>Select department to begin scanning</h4>",
+                unsafe_allow_html=True)
 
-# Reset log when department changes mid-session
-if st.session_state.active_dept != dept:
-    st.session_state.active_dept = dept
-    st.session_state.scan_log = []
-    st.session_state.last_result = None
-
-if dept == "RC":
-    st.info("RC mode: only boxes with **ULU** source FC are valid.", icon="ℹ️")
-else:
-    st.info("Inbound mode: boxes with **ULU** source FC will be flagged as errors.", icon="ℹ️")
-
-st.divider()
-
-# ─── Scan input ───────────────────────────────────────────────────────────────
-st.subheader("2 · Scan Totes")
-
-with st.form("scan_form", clear_on_submit=True):
-    box_input = st.text_input(
-        "Box ID",
-        placeholder="Scan barcode or type Box ID and press Enter...",
-        label_visibility="collapsed",
-    )
-    submitted = st.form_submit_button("Scan", use_container_width=True, type="primary")
-
-if submitted and box_input.strip():
-    try:
-        df = load_sheet()
-        result = lookup_box(box_input.strip(), dept, df)
-        result["time"] = datetime.now().strftime("%H:%M:%S")
-        st.session_state.scan_log.insert(0, result)
-        st.session_state.last_result = result
-    except FileNotFoundError:
-        st.error(
-            f"Service account file `{SERVICE_ACCOUNT_FILE}` not found. "
-            "Place it in the same folder as this script.",
-            icon="🔑",
-        )
-    except Exception as e:
-        st.error(f"Error: {e}", icon="⚠️")
-
-# ─── Last scan result (prominent) ────────────────────────────────────────────
-if st.session_state.last_result:
-    r = st.session_state.last_result
-    css = {"OK": "result-ok", "ERROR": "result-error", "NOT_FOUND": "result-warn"}[r["status"]]
-    # Convert markdown bold to HTML for the styled box
-    msg_html = r["message"].replace("**", "<b>", 1)
-    while "**" in msg_html:
-        msg_html = msg_html.replace("**", "</b>", 1).replace("**", "<b>", 1)
-    st.markdown(f'<div class="{css}">{msg_html}</div>', unsafe_allow_html=True)
-    st.markdown("")
-
-# ─── Scan log table ───────────────────────────────────────────────────────────
-if st.session_state.scan_log:
-    st.divider()
-    col_title, col_btn = st.columns([4, 1])
-    with col_title:
-        total = len(st.session_state.scan_log)
-        ok_count = sum(1 for e in st.session_state.scan_log if e["status"] == "OK")
-        err_count = sum(1 for e in st.session_state.scan_log if e["status"] == "ERROR")
-        nf_count = sum(1 for e in st.session_state.scan_log if e["status"] == "NOT_FOUND")
-        st.subheader(f"Scan Log — {total} scanned | ✅ {ok_count} | ❌ {err_count} | ⚠️ {nf_count}")
-    with col_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Clear Log", use_container_width=True):
+    st.markdown('<div class="dept-btn-row">', unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("RC", use_container_width=True, type="primary"):
+            st.session_state.dept = "RC"
             st.session_state.scan_log = []
             st.session_state.last_result = None
             st.rerun()
+    with col2:
+        if st.button("Inbound", use_container_width=True, type="primary"):
+            st.session_state.dept = "Inbound"
+            st.session_state.scan_log = []
+            st.session_state.last_result = None
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    log_df = pd.DataFrame(
-        [{"Time": e["time"], "Box ID": e["box_id"], "Source FC": e["source_fc"], "Status": e["status"]}
-         for e in st.session_state.scan_log]
-    )
 
-    def _color_status(val):
-        if val == "OK":
-            return "background-color:#d4edda; color:#155724"
-        if val == "ERROR":
-            return "background-color:#f8d7da; color:#721c24"
-        return "background-color:#fff3cd; color:#856404"
+# ════════════════════════════════════════════════════════════════════════════
+# SCAN PAGE
+# ════════════════════════════════════════════════════════════════════════════
+else:
+    dept = st.session_state.dept
 
-    styled = log_df.style.map(_color_status, subset=["Status"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    # Header row
+    col_h, col_back = st.columns([5, 1])
+    with col_h:
+        st.markdown(f"<h2 style='margin-bottom:4px'>📦 {dept} — Tote Scanner</h2>",
+                    unsafe_allow_html=True)
+    with col_back:
+        st.markdown('<div class="back-btn">', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("← Back"):
+            st.session_state.dept = None
+            st.session_state.scan_log = []
+            st.session_state.last_result = None
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if dept == "RC":
+        st.info("RC mode — only **ULU** source FCs are valid.", icon="ℹ️")
+    else:
+        st.info("Inbound mode — **ULU** source FCs will be flagged as errors.", icon="ℹ️")
+
+    st.divider()
+
+    # ── Scan form ──────────────────────────────────────────────────────────
+    # Barcode scanners send the code followed by Enter — the form auto-submits on Enter.
+    with st.form("scan_form", clear_on_submit=True):
+        box_input = st.text_input(
+            "Box ID",
+            placeholder="Scan barcode — auto-submits on Enter...",
+            label_visibility="collapsed",
+        )
+        st.form_submit_button("Submit", use_container_width=True, type="primary")
+
+    # Auto-focus the input after every rerun so the scanner can go straight in
+    st.components.v1.html("""
+    <script>
+        setTimeout(function () {
+            const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+            if (inputs.length > 0) inputs[0].focus();
+        }, 150);
+    </script>
+    """, height=0)
+
+    # ── Process scan ──────────────────────────────────────────────────────
+    if box_input.strip():
+        try:
+            df = load_source_sheet()
+            result = lookup_box(box_input.strip(), dept, df)
+            result["time"] = datetime.now().strftime("%H:%M:%S")
+
+            log_to_sheet(dept, result["box_id"], result["source_fc"], result["status"])
+
+            st.session_state.scan_log.insert(0, result)
+            st.session_state.last_result = result
+        except FileNotFoundError:
+            st.error(f"Credentials file `{SERVICE_ACCOUNT_FILE}` not found.", icon="🔑")
+        except Exception as e:
+            st.error(f"Error: {e}", icon="⚠️")
+
+    # ── Last result banner ────────────────────────────────────────────────
+    if st.session_state.last_result:
+        r = st.session_state.last_result
+        css = {"OK": "res-ok", "ERROR": "res-err", "NOT_FOUND": "res-warn"}[r["status"]]
+        st.markdown(f'<div class="{css}">{r["message"]}</div>', unsafe_allow_html=True)
+
+    # ── Scan log ──────────────────────────────────────────────────────────
+    if st.session_state.scan_log:
+        st.divider()
+        ok_n  = sum(1 for e in st.session_state.scan_log if e["status"] == "OK")
+        err_n = sum(1 for e in st.session_state.scan_log if e["status"] == "ERROR")
+        nf_n  = sum(1 for e in st.session_state.scan_log if e["status"] == "NOT_FOUND")
+
+        col_l, col_clr = st.columns([4, 1])
+        with col_l:
+            st.markdown(
+                f"**Scan Log** — {len(st.session_state.scan_log)} scanned &nbsp;|&nbsp; "
+                f"✅ {ok_n} &nbsp;❌ {err_n} &nbsp;⚠️ {nf_n}",
+                unsafe_allow_html=True,
+            )
+        with col_clr:
+            if st.button("Clear Log", use_container_width=True):
+                st.session_state.scan_log = []
+                st.session_state.last_result = None
+                st.rerun()
+
+        log_df = pd.DataFrame(
+            [{"Time": e["time"], "Box ID": e["box_id"],
+              "Source FC": e["source_fc"], "Status": e["status"]}
+             for e in st.session_state.scan_log]
+        )
+
+        def _color(val):
+            return {
+                "OK":        "background-color:#d4edda;color:#155724",
+                "ERROR":     "background-color:#f8d7da;color:#721c24",
+                "NOT_FOUND": "background-color:#fff3cd;color:#856404",
+            }.get(val, "")
+
+        st.dataframe(
+            log_df.style.map(_color, subset=["Status"]),
+            use_container_width=True,
+            hide_index=True,
+        )
