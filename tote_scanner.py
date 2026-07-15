@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import gspread
 import pandas as pd
@@ -8,7 +9,8 @@ SHEET_ID = "1XZDSao2M3dPqrCbmIx_EZaps6aBPNlO9muEe9owfA2U"
 SHEET_GID = 958256319
 BOX_ID_COL = "Box ID"
 SOURCE_FC_COL = "Source FC"
-SERVICE_ACCOUNT_FILE = "creds.json"
+# Resolve creds path relative to this script file, regardless of launch directory
+SERVICE_ACCOUNT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creds.json")
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
